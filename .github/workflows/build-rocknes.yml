@@ -1,0 +1,129 @@
+# Place this file at: .github/workflows/build-rocknes.yml
+# in your ROCKBOX FORK (not in the rocknes plugin folder itself).
+#
+# What it does:
+#   1. Checks out your Rockbox fork
+#   2. Copies rocknes/ (committed into the fork under apps/plugins/rocknes)
+#      -- see setup steps below, this workflow does NOT unzip anything itself
+#   3. Patches SUBDIRS and viewers.config automatically via the snippet files
+#   4. Builds the real arm-eabi toolchain via rockboxdev.sh
+#   5. Configures for ipodmini2g, Normal build
+#   6. Uploads the build output (rockbox.ipod image + rocknes.rock) as a
+#      downloadable artifact -- no local machine needed at all
+
+name: Build rocknes for iPod Mini 2G
+
+on:
+  workflow_dispatch:      # manual "Run workflow" button in the Actions tab
+  push:
+    paths:
+      - 'apps/plugins/rocknes/**'
+      - '.github/workflows/build-rocknes.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90   # toolchain build alone can take 30-60 min on a fresh runner
+
+    steps:
+      - name: Checkout Rockbox fork
+        uses: actions/checkout@v4
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential bison flex texinfo libncurses5-dev \
+            gawk wget subversion python3 unzip
+
+      - name: Cache ARM toolchain
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: /opt/rockbox-toolchains
+          # bump the suffix if you ever need to force a rebuild
+          key: rockbox-arm-toolchain-v2
+
+      - name: Build ARM-EABI toolchain
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          export RBDEV_PREFIX=/opt/rockbox-toolchains
+          sudo mkdir -p "$RBDEV_PREFIX"
+          sudo chown "$USER" "$RBDEV_PREFIX"
+          cd tools
+          # Confirmed from tools/configure source: the ARM toolchain
+          # rockboxdev.sh builds is "arm-elf-eabi" (findarmgcc() in
+          # configure calls prefixtools arm-elf-eabi-), gcc 9.5.0.
+          # rockboxdev.sh's own menu is what actually needs answering
+          # here; if this script version prompts differently than the
+          # "a" below expects, run it once without piping input to see
+          # its actual prompt text, then adjust.
+          echo "a" | ./rockboxdev.sh || true
+
+      - name: Add toolchain to PATH
+        run: echo "/opt/rockbox-toolchains/arm-elf-eabi/bin" >> "$GITHUB_PATH"
+
+      - name: Verify plugin source is present
+        run: |
+          test -d apps/plugins/rocknes || {
+            echo "::error::apps/plugins/rocknes not found. Did you commit the plugin into this fork? See setup steps in this workflow's header comment.";
+            exit 1;
+          }
+
+      - name: Patch SUBDIRS
+        run: |
+          SNIPPET=apps/plugins/rocknes/SUBDIRS.rocknes.snippet
+          if [ -f "$SNIPPET" ] && ! grep -qF "rocknes" apps/plugins/SUBDIRS; then
+            cat "$SNIPPET" >> apps/plugins/SUBDIRS
+            echo "Patched apps/plugins/SUBDIRS"
+          else
+            echo "SUBDIRS already patched or snippet missing, skipping"
+          fi
+
+      - name: Patch viewers.config
+        run: |
+          SNIPPET=apps/plugins/rocknes/viewers.config.rocknes.snippet
+          if [ -f "$SNIPPET" ] && ! grep -qF "nes" apps/plugins/viewers.config; then
+            cat "$SNIPPET" >> apps/plugins/viewers.config
+            echo "Patched apps/plugins/viewers.config"
+          else
+            echo "viewers.config already patched or snippet missing, skipping"
+          fi
+
+      - name: Configure for iPod Mini 2G (Normal build)
+        run: |
+          mkdir -p build
+          cd build
+          # Confirmed from tools/configure source: it accepts
+          # --target=, --ram=, --rbdir=, --type= as real CLI flags
+          # (not just interactive prompts), so this should work
+          # non-interactively. NOT verified: the exact target string
+          # for iPod Mini 2G and the letter code --type expects for
+          # "Normal" (likely "n", possibly case-sensitive or spelled
+          # differently in the current menu -- configure's advanced
+          # options menu changes over time). If this step fails with
+          # an unrecognized target/type error, check the job log for
+          # what configure printed, or run
+          # `../tools/configure --help` as a preceding step to confirm
+          # the accepted values, then adjust the flags below.
+          ../tools/configure --target=ipodmini2g --type=n
+
+      - name: Build
+        run: |
+          cd build
+          make -j"$(nproc)"
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p out
+          find build -iname "rocknes.rock" -exec cp {} out/ \;
+          find build -iname "rockbox.ipod" -exec cp {} out/ \;
+          find build -iname "*.zip" -path "*rockbox*" -exec cp {} out/ \; || true
+          ls -la out/
+
+      - name: Upload build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: rocknes-ipodmini2g-build
+          path: out/
+          if-no-files-found: warn
