@@ -1,0 +1,11 @@
+/* rocknes - NES emulator, see rocknes/README.md
+ *
+ * Guarded to LCD_DEPTH <= 8 because gfx_rockbox.c writes directly into
+ * fb_data as a plain byte-per-pixel greyscale/palette value (the
+ * typedef for fb_data is "unsigned char" in that range - see
+ * firmware/export/lcd.h). Higher-depth colour targets would need a
+ * different (colour-preserving) blit path that hasn't been written.
+ */
+#if (LCD_DEPTH <= 8)
+rocknes
+#endif
